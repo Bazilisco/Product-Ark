@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/
+
+# SO
+.DS_Store
+Thumbs.db
+
+# Dados gerados
+*.log
