@@ -67,7 +67,7 @@ def parse_cpu(s: str) -> float:
                 pass
         return base + gen_bonus
 
-    # ARM / mobile (heurística para ordenação relativa)
+    # ARM / mobile (heurística leve)
     if "SNAPDRAGON" in s:
         m = re.search(r"SNAPDRAGON\s*(\d+)", s)
         if m:
@@ -90,7 +90,7 @@ STO_PATTERNS = [
 def _parse_num(num_str: str) -> float:
     s = str(num_str).strip().replace(" ", "")
     if "," in s and "." in s:
-        s = s.replace(",", "")       # vírgula de milhar
+        s = s.replace(",", "")       # vírgula milhar
     else:
         s = s.replace(",", ".")      # vírgula decimal
     return float(s)
@@ -102,11 +102,10 @@ def _to_gb(num: str, unit: str) -> float:
 def parse_storage_with_type(text: str) -> Tuple[float, str, str]:
     """
     Retorna (storage_gb, storage_type, texto_sem_storage).
-    Blindagem de 'M2' (CPU Apple) e validação numérica segura.
+    Protege 'M2' (CPU Apple) e valida número antes de converter.
     """
     s_orig = _norm(text)
-    # Blindagem: Apple M1/M2/M3/M4 -> APL1/APL2/... apenas para regex de storage
-    s = re.sub(r"\bM([1-5])\b", r"APL\1", s_orig)
+    s = re.sub(r"\bM([1-5])\b", r"APL\1", s_orig)  # blindagem para storage
 
     for pat in STO_PATTERNS:
         m = re.search(pat, s)
@@ -115,7 +114,6 @@ def parse_storage_with_type(text: str) -> Tuple[float, str, str]:
 
         groups = [g for g in m.groups() if g]
 
-        # Normaliza ordem
         if groups[0] in ["SSD", "NVME", "NV.ME", "M.2", "M2", "HDD", "HD"]:
             stype, num, unit = groups[0], groups[1], groups[2]
         elif groups[-1] in ["SSD", "NVME", "NV.ME", "M.2", "M2", "HDD", "HD", "STORAGE", "ROM"]:
@@ -132,16 +130,14 @@ def parse_storage_with_type(text: str) -> Tuple[float, str, str]:
         else:
             stype = "STORAGE"
 
-        # valida que 'num' é realmente numérico
         if not re.fullmatch(r"[\d\.,]+", str(num).strip()):
-            continue
+            continue  # evita casos como "M2" cair aqui
 
         try:
             gb = _to_gb(num, unit)
         except Exception:
             continue
 
-        # remove do texto original
         matched_txt = m.group(0)
         matched_txt_for_original = matched_txt.replace("APL", "M")
         clean = s_orig.replace(matched_txt_for_original, "", 1)
@@ -149,7 +145,7 @@ def parse_storage_with_type(text: str) -> Tuple[float, str, str]:
 
     return 0.0, "", s_orig
 
-# ------------------ RAM (evitando confusão com storage) ------------------
+# ------------------ RAM ------------------
 RAM_TIPICOS = [2, 3, 4, 6, 8, 12, 16, 18, 24, 32, 48, 64, 96, 128]
 
 def parse_ram_from_text(text_without_storage: str) -> float:
@@ -173,34 +169,20 @@ def parse_gpu_dedicated(s1: str, s2: str) -> int:
 def parse_screen_inches(s: str) -> float:
     """
     Extrai polegadas evitando confundir '18 GB' com '18 pol'.
-    Regras:
-      - primeiro tenta <número> + (POL|")
-      - depois 'TELA' seguido de número
-      - por fim, número de 10–19.9 que NÃO esteja antes de 'GB'
     """
-    s = _norm(s).replace(",", ".")  # 15,6 -> 15.6
-
-    # 1) 14 POL, 15.6", etc.
+    s = _norm(s).replace(",", ".")
     m = re.search(r'\b(\d{1,2}(?:\.\d)?)\s*(?:POL|")\b', s)
     if m:
         val = float(m.group(1))
-        if 7.0 <= val <= 19.9:
-            return val
-
-    # 2) TELA 14 (opcional POL)
+        if 7.0 <= val <= 19.9: return val
     m = re.search(r'\bTELA\b[^0-9]{0,6}(\d{1,2}(?:\.\d)?)', s)
     if m:
         val = float(m.group(1))
-        if 7.0 <= val <= 19.9:
-            return val
-
-    # 3) fallback: um número 10–19.9 que NÃO esteja seguido de GB
+        if 7.0 <= val <= 19.9: return val
     m = re.search(r'\b(1\d(?:\.\d)?)\b(?!\s*GB)', s)
     if m:
         val = float(m.group(1))
-        if 10.0 <= val <= 19.9:
-            return val
-
+        if 10.0 <= val <= 19.9: return val
     return 0.0
 
 # ------------------ Família ------------------
@@ -231,35 +213,28 @@ def enrich(df: pd.DataFrame) -> pd.DataFrame:
         d.get("tamanho_tela", "").astype(str)
     )
 
-    # CPU
     d["cpu_score"] = text.apply(parse_cpu)
 
-    # Storage (tamanho + tipo) e texto sem storage
     stor = text.apply(parse_storage_with_type)
     stor_df = pd.DataFrame(stor.tolist(), index=d.index)
     d["storage_gb"] = stor_df[0]
     d["storage_type"] = stor_df[1]
     text_wo_storage = stor_df[2]
 
-    # RAM a partir da coluna e fallback no texto sem storage
     ram_from_col = d.get("memoria_ram", "").astype(str).apply(parse_ram_from_text)
     ram_from_text = text_wo_storage.apply(parse_ram_from_text)
     d["ram_gb"] = ram_from_col.mask(ram_from_col == 0, ram_from_text)
 
-    # GPU / Tela (preferir coluna; fallback no texto com parser robusto)
     d["gpu_dedicated"] = [parse_gpu_dedicated(a, b) for a, b in zip(d.get("placa_de_video", ""), text)]
     screen_from_col = d.get("tamanho_tela", "").astype(str).apply(parse_screen_inches)
     screen_from_text = text.apply(parse_screen_inches)
     d["screen_in"] = screen_from_col.mask(screen_from_col == 0, screen_from_text)
 
-    # Estoque
     for c in ["saldo_novo", "saldo_seminovo", "saldo_sustentacao"]:
         if c not in d: d[c] = 0
     d["total_saldo"] = d[["saldo_novo", "saldo_seminovo", "saldo_sustentacao"]].sum(axis=1, min_count=1).fillna(0)
 
-    # Família
     d["familia"] = d.apply(family_from_row, axis=1)
-
     return d
 
 # ------------------ Spec / Comparação ------------------
