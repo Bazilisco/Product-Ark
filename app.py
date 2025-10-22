@@ -1,7 +1,10 @@
 import streamlit as st
 import pandas as pd
-from notebook_matcher import enrich, recommend
+from notebook_matcher import enrich, recommend, find_batteries_for_notebook
 
+# =========================================
+# Config e cabeçalho
+# =========================================
 st.set_page_config(page_title="ArkMatch", layout="wide")
 
 st.markdown("""
@@ -28,6 +31,9 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# =========================================
+# Carrega a base integrada
+# =========================================
 DATA_PATH = "data/produtos_final.xlsx"
 try:
     df = pd.read_excel(DATA_PATH)
@@ -37,6 +43,9 @@ except Exception:
 
 edf = enrich(df)
 
+# =========================================
+# Métricas de topo
+# =========================================
 c1, c2, c3, c4, c5 = st.columns(5)
 with c1: st.metric("Total de itens", len(edf))
 with c2: st.metric("Com estoque", int((edf["total_saldo"] > 0).sum()))
@@ -45,6 +54,9 @@ with c4: st.metric("Desktops", int((edf["familia"] == "DESKTOP").sum()))
 with c5: st.metric("Tablets/Smartphones", int(edf["familia"].isin(["TABLET","SMARTPHONE"]).sum()))
 st.markdown("---")
 
+# =========================================
+# Busca principal
+# =========================================
 st.subheader("Buscar equivalentes")
 sku = st.text_input("SKU base (ex.: NB3091 / DT0XXX / TB0XXX / SM0XXX)").strip()
 show_diag = st.checkbox("Mostrar diagnóstico", value=False)
@@ -59,6 +71,7 @@ if st.button("Encontrar compatíveis", type="primary", use_container_width=True)
 
     base_row = base_rows.iloc[0]
 
+    # ---------- diagnóstico opcional ----------
     if show_diag:
         diag = pd.DataFrame([{
             "Código": base_row["codigo"],
@@ -70,11 +83,14 @@ if st.button("Encontrar compatíveis", type="primary", use_container_width=True)
             "GPU dedicada": base_row["gpu_dedicated"],
             "Tela (pol)": base_row["screen_in"],
             "Saldo total": base_row["total_saldo"],
-            "Status": base_row.get("status", "")
+            "Status": base_row.get("status", ""),
+            "Fabricante": base_row.get("fabricante",""),
+            "Modelo base (p/ bateria)": base_row.get("modelo_base","")
         }])
         st.info("Interpretação do SKU base:")
         st.dataframe(diag, use_container_width=True)
 
+    # ---------- resultados equivalentes ----------
     found = recommend(df, sku, topn=30)
     if found.empty:
         st.warning("Nenhuma opção igual/superior encontrada com os critérios atuais.")
@@ -91,3 +107,20 @@ if st.button("Encontrar compatíveis", type="primary", use_container_width=True)
             mime="text/csv",
             use_container_width=True
         )
+
+    # ---------- baterias compatíveis (se for notebook) ----------
+    if str(base_row.get("familia","")).upper() == "NOTEBOOK":
+        st.markdown("### 🔋 Baterias compatíveis para este notebook")
+        batt = find_batteries_for_notebook(df, base_row, topn=20)
+        if batt.empty:
+            st.info("Nenhuma bateria específica encontrada para este modelo na base.")
+        else:
+            st.dataframe(batt, use_container_width=True)
+            csvb = batt.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                label="⬇️ Baixar lista de baterias",
+                data=csvb,
+                file_name=f"baterias_{sku}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
