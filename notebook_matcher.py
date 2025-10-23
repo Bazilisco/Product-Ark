@@ -187,10 +187,13 @@ def parse_screen_inches(s: str) -> float:
 NOTEBOOK_KEYS = ["NOTEBOOK","LAPTOP","MACBOOK","LATITUDE","THINKPAD","ELITEBOOK","PROBOOK","VOSTRO","IDEAPAD","LEGION","YOGA","CHROMEBOOK","XPS","VIVOBOOK","ZENBOOK"]
 DESKTOP_KEYS  = ["DESKTOP","TORRE","TOWER","WORKSTATION","OPTIPLEX","THINKCENTRE","ELITEDESK","PRODESK","MICRO TOWER","USFF","SFF"]
 TABLET_KEYS   = ["TABLET","IPAD","GALAXY TAB","SURFACE","LENOVO TAB","MI PAD","IPAD PRO","IPAD AIR"]
-PHONE_KEYS    = ["SMARTPHONE","CELULAR","IPHONE","GALAXY S","MOTO","XIAOMI","REDMI","POCO","A[0-9]{1,2}"]
+# Smartphone: removeu regex genérico A\d+ (podia confundir 'A14 POL')
+PHONE_KEYS    = ["SMARTPHONE","CELULAR","IPHONE","GALAXY S","MOTO","XIAOMI","REDMI","POCO","EDGE",
+                 r"GALAXY\s*A\d{1,2}\b", r"MOTO\s*G", r"S\d{1,2}\b"]
 
 def _collect_text_for_family(r: pd.Series) -> str:
-    parts = [str(r.get(c,"")) for c in ["codigo","descricao","descricao_subtitulo","modelo","ger_equipamento","tipo","tela"]]
+    # NÃO usamos 'codigo' aqui para não enviesar pela sigla NB/PC/TB/SM
+    parts = [str(r.get(c,"")) for c in ["descricao","descricao_subtitulo","modelo","ger_equipamento","tipo","tela"]]
     return _norm(" ".join(parts))
 
 def _kw_score(t: str, keys: List[str]) -> int:
@@ -206,11 +209,6 @@ def family_from_row(r: pd.Series) -> tuple[str,int]:
     s_desk = _kw_score(t, DESKTOP_KEYS)
     s_tab  = _kw_score(t, TABLET_KEYS)
     s_ph   = _kw_score(t, PHONE_KEYS)
-    code = _norm(r.get("codigo"))
-    if code.startswith("NB"): s_note += 1
-    if code.startswith("DT") or code.startswith("PC"): s_desk += 1
-    if code.startswith("TB"): s_tab += 1
-    if code.startswith("SM"): s_ph += 1
     scores = {"NOTEBOOK":s_note,"DESKTOP":s_desk,"TABLET":s_tab,"SMARTPHONE":s_ph}
     fam = max(scores, key=scores.get); conf = scores[fam]
     if conf <= 1:
@@ -387,19 +385,21 @@ def recommend(df: pd.DataFrame, sku: str, topn: int = 30,
               only_status: tuple|None=None, min_screen: float|None=None,
               allow_family_override: bool=False,
               cpu_cap: float|None=1.5, ram_factor_cap: float|None=2.0, storage_factor_cap: float|None=2.0) -> pd.DataFrame:
+    """
+    Retorna recomendações 'iguais ou superiores' PRIORIZANDO a mesma marca,
+    mas incluindo outras marcas equivalentes. Matching é **estrito por família**.
+    """
     d = enrich(df)
     base_df = d[d["codigo"].astype(str).str.upper() == sku.upper()]
     if base_df.empty:
         raise ValueError(f"SKU {sku} não encontrado.")
     base = base_df.iloc[0]
 
-    base_family = base["familia"]; base_fconf = int(base.get("familia_conf",0))
+    base_family = base["familia"]
     base_brand  = _norm(base.get("fabricante",""))
 
-    # Mantém mesma família (quando confiante)
-    pool = d.copy()
-    if not allow_family_override and base_family != "OUTROS" and base_fconf >= 2:
-        pool = pool[pool["familia"] == base_family]
+    # === ESTRITO POR FAMÍLIA ===
+    pool = d[d["familia"] == base_family].copy()
 
     # Só itens com estoque
     pool = pool[pool["total_saldo"] > 0]
@@ -464,7 +464,7 @@ def _battery_matches_model(batt_text: str, model_sig: str, brand: str) -> bool:
     # exige aparecer a assinatura de modelo
     if model_sig and model_sig in t:
         return True
-    # fallback: se assinatura for 'DELL 3420' tenta só o número com 'LATITUDE'
+    # fallback: se assinatura for 'DELL 3420' tenta só o número com 'LATITUDE'/etc.
     m = re.search(r"\b(\d{3,4})\b", model_sig)
     if m and ("LATITUDE" in t or "THINKPAD" in t or "ELITEBOOK" in t or "PROBOOK" in t or "VOSTRO" in t):
         return m.group(1) in t
