@@ -1,189 +1,205 @@
-# app.py
-from __future__ import annotations
-import os
-import pandas as pd
 import streamlit as st
+import pandas as pd
+from notebook_matcher import enrich, recommend, find_batteries_for_notebook
 
-from notebook_matcher import (
-    enrich,
-    recommend,
-    find_batteries_for_notebook,
+# =========================================
+# Config Streamlit
+# =========================================
+st.set_page_config(
+    page_title="ArkMatch",
+    page_icon="🔎",
+    layout="wide",
 )
 
-# ----------------------------
-# Configuração da página
-# ----------------------------
-st.set_page_config(page_title="ArkMatch", layout="wide", page_icon="🔎")
+# =========================================
+# Carregar base integrada do repo
+# =========================================
+BASE_PATH = "data/produtos_final.xlsx"
 
-# CSS: header centralizado + esconder botões do Streamlit
-st.markdown(
-    """
-    <style>
-      /* Esconde menu hamburger, deploy e rodapé */
-      [data-testid="stToolbar"] { display: none !important; }
-      [data-testid="stDecoration"] { display: none !important; }
-      [data-testid="stStatusWidget"] { display: none !important; }
-      header { visibility: hidden; }
-      footer { visibility: hidden; }
-      [data-testid="stBaseButton-headerNoPadding"] { display: none !important; }
-      [data-testid="stActionButtonIcon"] { display: none !important; }
+@st.cache_data(show_spinner=False)
+def load_data():
+    raw = pd.read_excel(BASE_PATH)
+    return raw
 
-      /* Header visual */
-      .ark-header {
-        width: 100%;
-        text-align: center;
-        margin: 12px 0 6px 0;
-      }
-      .ark-header img {
-        height: 40px;
-        margin-bottom: 10px;
-        opacity: 0.95;
-      }
-      .ark-title {
-        text-align: center;
-        font-size: 36px;
-        font-weight: 800;
-        letter-spacing: 0.5px;
-        margin: -2px 0 6px 0;
-      }
-      /* Tabelas */
-      .small-note { font-size: 13px; opacity: .7; }
-    </style>
-    """,
-    unsafe_allow_html=True,
+df_raw = load_data()
+
+# Enriquecemos uma vez pra métricas do topo e diagnóstico depois
+df_enriched = enrich(df_raw)
+
+# métricas para os cards
+total_itens        = len(df_enriched)
+com_estoque        = (df_enriched["total_saldo"] > 0).sum()
+notebooks_qtd      = (df_enriched["familia"].str.upper() == "NOTEBOOK").sum()
+desktops_qtd       = (df_enriched["familia"].str.upper() == "DESKTOP").sum()
+tablets_qtd        = (df_enriched["familia"].str.upper() == "TABLET").sum()
+smartphones_qtd    = (df_enriched["familia"].str.upper() == "SMARTPHONE").sum()
+
+# =========================================
+# HEADER customizado (só logo grande)
+# =========================================
+header_col = st.columns([1,1,1])[1]  # pega a coluna do meio pra centralizar
+with header_col:
+    st.markdown(
+        """
+        <div style="
+            display:flex;
+            flex-direction:column;
+            align-items:center;
+            justify-content:center;
+            margin-top:0.5rem;
+            margin-bottom:1rem;
+        ">
+            <img src="https://arknet.arklok.com.br/assets/img/logos/logo-arklok.png"
+                 style="height:64px;">
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# Cards de métricas logo abaixo
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Total de itens", f"{total_itens}")
+c2.metric("Com estoque", f"{com_estoque}")
+c3.metric("Notebooks", f"{notebooks_qtd}")
+c4.metric("Desktops", f"{desktops_qtd}")
+c5.metric("Tablets/Smartphones", f"{tablets_qtd + smartphones_qtd}")
+
+st.markdown("---")
+
+# =========================================
+# Form de busca
+# =========================================
+st.header("Buscar equivalentes")
+
+sku_input = st.text_input(
+    "SKU base (ex.: NB3091 / DTOXXX / TBOXXX / SM0XXX)",
+    value="",
 )
 
-# ----------------------------
-# Header visual
-# ----------------------------
-LOGO_URL = "https://arknet.arklok.com.br/assets/img/logos/logo-arklok.png"
+show_diag = st.checkbox("Mostrar diagnóstico", value=False)
+
+buscar_btn = st.button(
+    "Encontrar compatíveis",
+    type="primary",
+    use_container_width=True,
+)
+
+# =========================================
+# Execução da busca
+# =========================================
+if buscar_btn:
+    sku_upper = sku_input.strip().upper()
+    if not sku_upper:
+        st.error("Digite um SKU.")
+    else:
+        try:
+            # roda recomendação com travamento rígido de família
+            recs = recommend(
+                df_raw,
+                sku_upper,
+                topn=30,
+            )
+
+            # pega a linha base já enriquecida (pra diagnóstico e baterias)
+            base_line = df_enriched[
+                df_enriched["codigo"].astype(str).str.upper() == sku_upper
+            ]
+            if base_line.empty:
+                st.error(f"SKU {sku_upper} não encontrado.")
+            else:
+                base_row = base_line.iloc[0]
+
+                if show_diag:
+                    st.subheader("Interpretação do SKU base:")
+                    diag_cols = [
+                        "codigo","descricao","familia",
+                        "ram_gb","storage_gb","storage_type","gpu_dedicated",
+                        "screen_in","total_saldo","status","fabricante"
+                    ]
+                    diag_df = base_line[diag_cols].copy()
+                    diag_df = diag_df.rename(columns={
+                        "codigo":"Código",
+                        "descricao":"Descrição",
+                        "familia":"Família",
+                        "ram_gb":"RAM (GB)",
+                        "storage_gb":"Armazenamento (GB)",
+                        "storage_type":"Tipo de armazenamento",
+                        "gpu_dedicated":"GPU dedicada",
+                        "screen_in":"Tela (pol)",
+                        "total_saldo":"Saldo total",
+                        "status":"Status",
+                        "fabricante":"Fabricante",
+                    })
+                    st.dataframe(
+                        diag_df,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                # baterias compatíveis (só faz sentido pra notebook)
+                bat_df = find_batteries_for_notebook(df_raw, base_row, topn=20)
+
+                # tabela de recomendações
+                if recs.empty:
+                    st.warning(
+                        "Nenhuma opção igual/superior encontrada com os critérios padrão."
+                    )
+                else:
+                    st.subheader("Opções compatíveis encontradas!")
+                    # mostramos apenas colunas úteis (cpu_score já não está aqui)
+                    show_cols = [
+                        "codigo","descricao","familia","familia_conf","fabricante",
+                        "ram_gb","storage_gb","storage_type","gpu_dedicated",
+                        "screen_in","total_saldo","status"
+                    ]
+                    out_table = recs[show_cols].copy()
+                    out_table = out_table.rename(columns={
+                        "codigo":"Código",
+                        "descricao":"Descrição",
+                        "familia":"Família",
+                        "familia_conf":"Conf. família",
+                        "fabricante":"Fabricante",
+                        "ram_gb":"RAM (GB)",
+                        "storage_gb":"Armazenamento (GB)",
+                        "storage_type":"Tipo de armazenamento",
+                        "gpu_dedicated":"GPU dedicada",
+                        "screen_in":"Tela (pol)",
+                        "total_saldo":"Saldo total",
+                        "status":"Status",
+                    })
+                    st.dataframe(
+                        out_table,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                # bloco de baterias, só aparece no modo diagnóstico e se achou algo
+                if show_diag and not bat_df.empty:
+                    st.subheader("Baterias compatíveis (mesmo modelo):")
+                    bat_table = bat_df.rename(columns={
+                        "codigo":"Código",
+                        "descricao":"Descrição",
+                        "fabricante":"Fabricante",
+                        "modelo_mencionado":"Modelo base",
+                        "total_saldo":"Saldo total",
+                        "status":"Status",
+                        "valor":"Valor",
+                    })
+                    st.dataframe(
+                        bat_table,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        except ValueError as e:
+            st.error(str(e))
+
+# rodapé com origem da base
 st.markdown(
     f"""
-    <div class="ark-header">
-      <img src="{LOGO_URL}" alt="Arklok" />
-      <div class="ark-title">ArkMatch</div>
+    <div style="margin-top:2rem;font-size:0.8rem;color:#aaa;">
+    Base integrada: <code>{BASE_PATH}</code>
     </div>
     """,
     unsafe_allow_html=True,
 )
-
-
-# ----------------------------
-# Carregar base integrada
-# ----------------------------
-@st.cache_data(show_spinner=False)
-def load_base() -> pd.DataFrame:
-    path = os.path.join("data", "produtos_final.xlsx")
-    df = pd.read_excel(path, engine="openpyxl")
-    # Garantir colunas esperadas como string
-    if "codigo" in df.columns:
-        df["codigo"] = df["codigo"].astype(str)
-    return df
-
-
-def _rename_cols_portugues(df: pd.DataFrame) -> pd.DataFrame:
-    rename = {
-        "codigo": "Código",
-        "descricao": "Descrição",
-        "familia": "Família",
-        "familia_conf": "Conf. família",
-        "fabricante": "Fabricante",
-        # cpu_score e cpu_class não são mostrados
-        "ram_gb": "RAM (GB)",
-        "storage_gb": "Armazenamento (GB)",
-        "storage_type": "Tipo de armazenamento",
-        "gpu_dedicated": "GPU dedicada",
-        "screen_in": "Tela (pol)",
-        "total_saldo": "Saldo total",
-        "status": "Status",
-        "valor": "Valor",
-        "modelo_base": "Modelo base",
-    }
-    cols = [c for c in df.columns if c in rename]
-    out = df[cols].rename(columns=rename)
-    return out
-
-
-# ============================
-# UI
-# ============================
-df_raw = load_base()
-
-st.markdown("### Buscar equivalentes")
-
-sku = st.text_input("SKU base (ex.: NB3091 / DTOXXX / TB0XXX / SM0XXX)", value="", max_chars=50).strip().upper()
-col_btn1, col_diag = st.columns([3, 1])
-with col_diag:
-    show_diag = st.checkbox("Mostrar diagnóstico", value=False)
-
-buscar = col_btn1.button("Encontrar compatíveis", use_container_width=True)
-
-# Espaço
-st.markdown("<br/>", unsafe_allow_html=True)
-
-if buscar:
-    if not sku:
-        st.error("Informe um SKU.")
-        st.stop()
-
-    try:
-        # Enriquecer a base (uma vez para todo o fluxo)
-        edf = enrich(df_raw)
-
-        base = edf[edf["codigo"].astype(str).str.upper() == sku]
-        if base.empty:
-            st.error(f"SKU **{sku}** não encontrado.")
-            st.stop()
-
-        base_row = base.iloc[0]
-
-        # Diagnóstico do SKU base (sem cpu_score/cpu_class)
-        if show_diag:
-            st.markdown("#### Interpretação do SKU base:")
-            base_show = base.copy()
-            base_show = base_show.drop(columns=[c for c in ["cpu_score", "cpu_class"] if c in base_show.columns])
-            st.dataframe(_rename_cols_portugues(base_show), use_container_width=True, hide_index=True)
-
-        # Recomendações
-        try:
-            rec = recommend(df_raw, sku=sku, topn=30)
-        except ValueError as e:
-            st.error(str(e))
-            st.stop()
-
-        st.markdown("#### Opções compatíveis encontradas!")
-        if rec.empty:
-            st.warning("Nenhuma opção igual/superior encontrada com estoque para este SKU.")
-        else:
-            # Esconde colunas internas
-            rec_show = rec.drop(columns=[c for c in ["cpu_score", "cpu_class"] if c in rec.columns])
-            st.dataframe(_rename_cols_portugues(rec_show), use_container_width=True, hide_index=True)
-
-        # Baterias para notebooks
-        if str(base_row.get("familia", "")).upper() == "NOTEBOOK":
-            st.markdown("#### Baterias compatíveis para este notebook")
-            bat = find_batteries_for_notebook(df_raw, base_row, topn=20)
-            if bat.empty:
-                st.info("Nenhuma bateria compatível localizada na base.")
-            else:
-                st.dataframe(
-                    bat.rename(
-                        columns={
-                            "codigo": "Código",
-                            "descricao": "Descrição",
-                            "fabricante": "Fabricante",
-                            "modelo_mencionado": "Modelo (extraído)",
-                            "total_saldo": "Saldo total",
-                            "status": "Status",
-                            "valor": "Valor",
-                        }
-                    ),
-                    use_container_width=True,
-                    hide_index=True,
-                )
-
-    except Exception as ex:
-        st.error(f"Ocorreu um erro: {ex}")
-
-# Rodapé leve
-st.markdown('<div class="small-note">Base integrada: <code>data/produtos_final.xlsx</code></div>', unsafe_allow_html=True)
