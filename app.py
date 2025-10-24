@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from notebook_matcher import enrich, recommend, find_batteries_for_notebook
+from notebook_matcher import enrich, recommend, find_batteries_for_notebook  # usa versão atualizada
 
 # =========================================
 # Config Streamlit
@@ -22,11 +22,9 @@ def load_data():
     return raw
 
 df_raw = load_data()
-
-# Enriquecemos uma vez pra métricas do topo e diagnóstico depois
 df_enriched = enrich(df_raw)
 
-# métricas para os cards
+# métricas topo
 total_itens        = len(df_enriched)
 com_estoque        = (df_enriched["total_saldo"] > 0).sum()
 notebooks_qtd      = (df_enriched["familia"].str.upper() == "NOTEBOOK").sum()
@@ -35,9 +33,9 @@ tablets_qtd        = (df_enriched["familia"].str.upper() == "TABLET").sum()
 smartphones_qtd    = (df_enriched["familia"].str.upper() == "SMARTPHONE").sum()
 
 # =========================================
-# HEADER customizado (só logo grande)
+# HEADER (logo grande centralizada)
 # =========================================
-header_col = st.columns([1,1,1])[1]  # pega a coluna do meio pra centralizar
+header_col = st.columns([1,1,1])[1]
 with header_col:
     st.markdown(
         """
@@ -56,7 +54,7 @@ with header_col:
         unsafe_allow_html=True,
     )
 
-# Cards de métricas logo abaixo
+# métricas
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Total de itens", f"{total_itens}")
 c2.metric("Com estoque", f"{com_estoque}")
@@ -67,12 +65,12 @@ c5.metric("Tablets/Smartphones", f"{tablets_qtd + smartphones_qtd}")
 st.markdown("---")
 
 # =========================================
-# Form de busca
+# Busca
 # =========================================
 st.header("Buscar equivalentes")
 
 sku_input = st.text_input(
-    "SKU base (ex.: NB3091 / DTOXXX / TBOXXX / SM0XXX)",
+    "SKU base (ex.: NB3091 / DT0XXX / TB0XXX / SM0XXX)",
     value="",
 )
 
@@ -85,7 +83,7 @@ buscar_btn = st.button(
 )
 
 # =========================================
-# Execução da busca
+# Execução
 # =========================================
 if buscar_btn:
     sku_upper = sku_input.strip().upper()
@@ -93,14 +91,12 @@ if buscar_btn:
         st.error("Digite um SKU.")
     else:
         try:
-            # roda recomendação com travamento rígido de família
             recs = recommend(
                 df_raw,
                 sku_upper,
                 topn=30,
             )
 
-            # pega a linha base já enriquecida (pra diagnóstico e baterias)
             base_line = df_enriched[
                 df_enriched["codigo"].astype(str).str.upper() == sku_upper
             ]
@@ -136,17 +132,15 @@ if buscar_btn:
                         hide_index=True,
                     )
 
-                # baterias compatíveis (só faz sentido pra notebook)
+                # baterias compatíveis (notebook only)
                 bat_df = find_batteries_for_notebook(df_raw, base_row, topn=20)
 
-                # tabela de recomendações
                 if recs.empty:
                     st.warning(
                         "Nenhuma opção igual/superior encontrada com os critérios padrão."
                     )
                 else:
                     st.subheader("Opções compatíveis encontradas!")
-                    # mostramos apenas colunas úteis (cpu_score já não está aqui)
                     show_cols = [
                         "codigo","descricao","familia","familia_conf","fabricante",
                         "ram_gb","storage_gb","storage_type","gpu_dedicated",
@@ -173,7 +167,6 @@ if buscar_btn:
                         hide_index=True,
                     )
 
-                # bloco de baterias, só aparece no modo diagnóstico e se achou algo
                 if show_diag and not bat_df.empty:
                     st.subheader("Baterias compatíveis (mesmo modelo):")
                     bat_table = bat_df.rename(columns={
@@ -194,7 +187,6 @@ if buscar_btn:
         except ValueError as e:
             st.error(str(e))
 
-# rodapé com origem da base
 st.markdown(
     f"""
     <div style="margin-top:2rem;font-size:0.8rem;color:#aaa;">
